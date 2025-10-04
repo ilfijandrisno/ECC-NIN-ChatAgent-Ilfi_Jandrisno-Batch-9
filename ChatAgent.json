@@ -1,0 +1,546 @@
+{
+  "name": "ChatAgent",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.mode === 'top' ? 0 : 1 }}\n"
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        528,
+        -144
+      ],
+      "id": "3770d564-2d58-446f-975a-ed0033c7c61b",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2bc50a39-6a1b-47ec-a046-38c86c0b52b9",
+              "leftValue": "={{ !$json.ids }}",
+              "rightValue": "={{ ($json.symbol || $json.query) }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        544,
+        208
+      ],
+      "id": "ef4e4dab-5a6c-4f52-ba1c-a187718f90e2",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.coingecko.com/api/v3/coins/markets",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "vs_currency",
+              "value": "={{$json.vs}}"
+            },
+            {
+              "name": "order",
+              "value": "market_cap_desc"
+            },
+            {
+              "name": "per_page",
+              "value": "250"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            },
+            {
+              "name": "price_change_percentage",
+              "value": "1h,24h"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        -160
+      ],
+      "id": "07ddf41d-83ff-426d-84e5-fdaebadd48b0",
+      "name": "HTTP Market"
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- 1) Ambil parameter asli dari node \"AI Params\"\nconst ai = $items(\"AI Params\", 0, 0)?.[0]?.json || {};\nconst type   = (ai.type   || 'gainers').toLowerCase();\nconst window = (ai.window || '24h').toLowerCase();\nconst vs     = (ai.vs     || 'usd').toLowerCase();\nconst top    = Math.max(1, Math.min(50, parseInt(ai.top ?? '5', 10)));\n\n// --- 2) Satukan semua item dari \"HTTP Market\" menjadi array data\nconst data = Array.isArray(items?.[0]?.json)\n  ? items[0].json                         // kasus: 1 item berisi array\n  : items.map(it => it.json);             // kasus: split into items (250 items)\n\n// --- 3) Tentukan key persen sesuai window\nconst keyMap = {\n  '1h':  'price_change_percentage_1h_in_currency',\n  '24h': 'price_change_percentage_24h_in_currency',\n};\nconst key = keyMap[window] || keyMap['24h'];\n\n// --- 4) Sort + ambil TOP N (filter yang nilainya valid)\nconst sorted = data\n  .filter(x => Number.isFinite(x[key]))\n  .sort((a, b) => type === 'losers'\n    ? (a[key] - b[key])\n    : (b[key] - a[key])\n  );\n\nconst take = sorted.slice(0, top);\n\n// --- 5) Bentuk output untuk BuildHTML / Respond\nreturn [{\n  json: {\n    mode: 'top',\n    type, window, vs, top,\n    rows: take.map((x, i) => ({\n      rank: i + 1,\n      id: x.id,\n      name: x.name,\n      symbol: (x.symbol || '').toUpperCase(),\n      price: x.current_price,\n      chg1h: x.price_change_percentage_1h_in_currency,\n      chg24h: x.price_change_percentage_24h_in_currency,\n      mc: x.market_cap\n    }))\n  },\n  pairedItem: { item: 0 },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        -160
+      ],
+      "id": "cc8c391a-968a-4625-ad01-82a1a198d461",
+      "name": "PickTop"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { type, window, vs, rows } = $json;\nconst title = `Top ${type === 'losers' ? 'Losers' : 'Gainers'} (${window}) – Crypto`;\n\nfunction fmtPct(v){ return (v==null) ? '-' : `${v.toFixed(2)}%`; }\nfunction fmtPrice(p){\n  if (p >= 1000) return p.toLocaleString('en-US',{maximumFractionDigits:2});\n  if (p >= 1)    return p.toLocaleString('en-US',{maximumFractionDigits:4});\n  return p.toLocaleString('en-US',{maximumFractionDigits:8});\n}\n\n// teks ringkas untuk chat bubble\nconst lines = (rows||[]).map(r =>\n  `${r.rank}. ${r.symbol} — ${fmtPrice(r.price)} ${vs.toUpperCase()} (${window==='1h' ? fmtPct(r.chg1h) : fmtPct(r.chg24h)})`\n);\nconst reply = `${title}\\n${lines.join('\\n') || 'Tidak ada data.'}`;\n\n// (HTML kamu sekarang)\nconst rowsHtml = rows.map(r => `\n  <tr>\n    <td>${r.rank}</td>\n    <td>${r.name} (${r.symbol})</td>\n    <td>${fmtPrice(r.price)} ${vs.toUpperCase()}</td>\n    <td>${fmtPct(window === '1h' ? r.chg1h : r.chg24h)}</td>\n  </tr>\n`).join('');\n\nconst html = `<!doctype html><html><head><meta charset=\"utf-8\"/><title>${title}</title>\n<style>\nbody{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial;padding:16px}\ntable{border-collapse:collapse;width:100%}\nth,td{border:1px solid #e5e7eb;padding:8px;text-align:left}\nth{background:#f8fafc}\nsmall{color:#475569}\n</style></head>\n<body>\n  <h2>${title}</h2>\n  <table>\n    <tr><th>#</th><th>Asset</th><th>Price</th><th>% Change (${window})</th></tr>\n    ${rowsHtml}\n  </table>\n  <p><small>Updated: ${new Date().toLocaleString('en-US',{timeZone:'Asia/Jakarta'})}</small></p>\n</body></html>`;\n\nreturn [{ json: { html, reply } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        -160
+      ],
+      "id": "1edb0241-d879-4c5f-a05d-ab091b4d5e66",
+      "name": "BuildHTML"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.coingecko.com/api/v3/search?query={{$json.symbol || $json.query}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        832,
+        80
+      ],
+      "id": "69d8e419-3158-4f4c-9bb2-5984ec6b48e8",
+      "name": "HTTP: Search"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.coingecko.com/api/v3/coins/markets   ?vs_currency={{$json.vs}}   &ids={{$json.finalIds}}   &price_change_percentage=1h,24h",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1056,
+        192
+      ],
+      "id": "d0ff7a8f-b86a-4c91-ba9a-7a35235f80eb",
+      "name": "HTTP: Markets (by ids)"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html"
+              },
+              {
+                "name": "charset",
+                "value": "utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1536,
+        192
+      ],
+      "id": "ff8a6d9c-9119-422a-a772-7d078abf818b",
+      "name": "Respond to Webhook1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = { ...$json };\nlet finalIds = [];\n\nif (state.ids) {\n  finalIds = state.ids.split(',').map(s => s.trim()).filter(Boolean);\n} else {\n  // Resolve dari /search\n  const search = items.find(it => Array.isArray(it.json.coins));\n  const coins = search ? search.json.coins : [];\n  // Jika symbol=btc, ambil coin yang symbol persis; kalau q, ambil top 1-5\n  const pickFromSymbol = (state.symbol || '').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);\n  if (pickFromSymbol.length) {\n    for (const want of pickFromSymbol) {\n      const hit = coins.find(c => (c.symbol || '').toLowerCase() === want);\n      if (hit?.id) finalIds.push(hit.id);\n    }\n  } else if (coins.length) {\n    // dari q: ambil sampai 5 id\n    finalIds = coins.slice(0, 5).map(c => c.id);\n  }\n}\n\nif (!finalIds.length) {\n  return [{ json: { html: `\n  <!doctype html><meta charset=\"utf-8\"/>\n  <p>Tidak ditemukan coin untuk parameter yang diberikan. Coba isi <code>ids=bitcoin</code> atau <code>symbol=btc</code> atau <code>q=bitcoin</code>.</p>\n  ` } }];\n}\n\nreturn [{ json: { ...state, finalIds: finalIds.join(',') } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        336
+      ],
+      "id": "37c0fde4-6ccc-45fb-8c9a-689f33df1b7e",
+      "name": "BuildIDs (gabungkan ids final)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { vs } = $json;\nconst data = items[0].json;\nconst arr = Array.isArray(data) ? data : [];\nconst title = `Harga Crypto – ${arr.map(x => x.symbol?.toUpperCase()).join(', ')}`;\n\nfunction fmtPct(v){ return (v==null) ? '-' : `${v.toFixed(2)}%`; }\nfunction fmtPrice(p){\n  if (p >= 1000) return p.toLocaleString('en-US',{maximumFractionDigits:2});\n  if (p >= 1)    return p.toLocaleString('en-US',{maximumFractionDigits:4});\n  return p.toLocaleString('en-US',{maximumFractionDigits:8});\n}\n\n// teks ringkas\nconst reply = arr.map(x =>\n  `${(x.symbol||'').toUpperCase()} — ${fmtPrice(x.current_price)} ${vs.toUpperCase()} (1h ${fmtPct(x.price_change_percentage_1h_in_currency)}, 24h ${fmtPct(x.price_change_percentage_24h_in_currency)})`\n).join('\\n') || 'Tidak ada data.';\n\n// (HTML kamu di sini, sama seperti sebelumnya)\nconst rowsHtml = arr.map(x => `\n  <tr>\n    <td>${x.name} (${(x.symbol||'').toUpperCase()})</td>\n    <td>${fmtPrice(x.current_price)} ${vs.toUpperCase()}</td>\n    <td>${fmtPct(x.price_change_percentage_1h_in_currency)}</td>\n    <td>${fmtPct(x.price_change_percentage_24h_in_currency)}</td>\n    <td>${x.market_cap?.toLocaleString('en-US') ?? '-'}</td>\n  </tr>\n`).join('');\n\nconst html = `<!doctype html><html><head><meta charset=\"utf-8\"/><title>${title}</title>... (style sama)</head><body>...${rowsHtml}...</body></html>`;\n\nreturn [{ json: { html, reply } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        192
+      ],
+      "id": "07c0686a-846f-49ce-a67e-5617ba516724",
+      "name": "Price"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1) Ambil teks dari AI Agent di berbagai kemungkinan field\nlet raw =\n  items?.[0]?.json?.output ??\n  items?.[0]?.json?.data ??\n  items?.[0]?.json?.response ??\n  items?.[0]?.json;\n\n// 2) Jika bukan string, jadikan string (untuk diparse)\nlet txt = (typeof raw === 'string') ? raw : JSON.stringify(raw ?? \"\");\n\n// 3) Bersihkan \"kulit\" non-JSON: label \"json\", backticks, code fence, dll.\ntxt = String(txt).trim()\n  .replace(/^```(?:json)?/i, '')  // hapus pembuka ``` atau ```json\n  .replace(/```$/, '')            // hapus penutup ```\n  .replace(/^\\s*json\\s*/i, '');   // hapus prefix 'json'\n\n// 4) Ambil bagian JSON murni: dari { pertama ke } terakhir\nconst s = txt.indexOf('{');\nconst e = txt.lastIndexOf('}');\nif (s >= 0 && e > s) txt = txt.slice(s, e + 1);\n\n// 5) Parse aman\nlet p = {};\ntry { p = JSON.parse(txt); } catch { p = {}; }\n\n// 6) Normalisasi & fallback cerdas\nconst clampTop = (n) => Math.max(1, Math.min(50, parseInt(n ?? '5', 10)));\n\nconst toLower = (v, d) => String(v ?? d).toLowerCase();\n\nconst mode   = toLower(p.mode,   'top');\nconst type   = toLower(p.type,   /loser/i.test(txt) ? 'losers' : 'gainers'); // fallback dari teks\nconst window = toLower(p.window, /1\\s?(?:j|h)/i.test(txt) ? '1h' : '24h');\nconst vs     = toLower(p.vs,     /idr|rupiah/i.test(txt) ? 'idr' : 'usd');\nconst top    = clampTop(p.top);\n\n// 7) Keluarkan shape final\nreturn [{\n  json: {\n    mode, type, window, vs, top,\n    ids:  p.ids || '',\n    symbol: p.symbol || '',\n    query: '' // unify dengan Parse Params lama\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -144
+      ],
+      "id": "0aa33692-6638-4ca1-bd90-ec14e98da2c6",
+      "name": "AI Params"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cd93b140-f266-4835-a49d-894cf9b35a7f",
+              "leftValue": "={{ $json.query?.q || $json.q || $json.body?.q || $json.body?.message }}\n",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -576,
+        -128
+      ],
+      "id": "d4f2567e-9cb5-482d-aa2d-6d4f26e1dbb6",
+      "name": "IF q exists (AI)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const q = $json.query || $json;\nconst clean = (s) => (s || '').toString().trim();\n\nconst mode   = clean(q.mode)   || 'top';\nconst type   = clean(q.type)   || 'gainers';\nconst window = clean(q.window) || '24h';\nconst vs     = clean(q.vs)     || 'usd';\nconst ids    = clean(q.ids);\nconst symbol = clean(q.symbol);\nconst query  = clean(q.q);\nconst topRaw = parseInt(q.top ?? '5', 10);\nconst top    = Math.max(1, Math.min(50, isFinite(topRaw) ? topRaw : 5));\n\nreturn [{ json: { mode, type, window, top, vs, ids, symbol, query } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        256
+      ],
+      "id": "f341427a-4167-4018-b02c-688f995bea28",
+      "name": "Parse Params"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.query?.q || $json.q || $json.body?.q || $json.body?.message || '' }}",
+        "options": {
+          "systemMessage": "You convert Indonesian or English natural language about crypto prices into a strict JSON for a downstream tool.\nReturn ONLY valid JSON (no prose).\nFields:\n- mode: \"top\" | \"price\"\n- type: \"gainers\" | \"losers\" (only if mode=top; default \"gainers\")\n- window: \"1h\" | \"24h\" (default \"24h\")\n- top: integer (default 5, max 50)\n- ids: comma-separated CoinGecko IDs (prefer this if user mentions names)\n- symbol: comma-separated symbols (use if user only mentions tickers)\n- vs: fiat code supported by CoinGecko (e.g., \"usd\",\"idr\"; default \"usd\")\nRules:\n- If user asks for \"top ...\", set mode=\"top\".\n- If user asks prices of specific coins, set mode=\"price\".\n- If both appear, prefer \"price\".\n- Normalize symbols lowercase.\n- Map bahasa: \"rupiah\"→\"idr\", \"dolar\"→\"usd\", \"sejam\"→\"1h\", \"24 jam/sehari\"→\"24h\", \"naik/gainer\", \"turun/loser\".\n- Do not include unknown fields.\n\nSelalu jawab dalam format JSON dengan field:\n{ \"mode\":\"top\", \"type\":\"losers|gainers\", \"window\":\"1h|24h\", \"vs\":\"usd|idr\", \"top\":5 }\nJangan berikan teks tambahan di luar JSON.\n\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        -192,
+        -144
+      ],
+      "id": "5488de9f-d2f9-4c51-9546-b66a97476e3c",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -192,
+        48
+      ],
+      "id": "8f22a3e2-80fc-4f6b-9f70-b48e259bda35",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "WJtMqBtKnlIn5nGO",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "d746c512-8df6-4a77-b080-4cb4be7931c5",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -816,
+        -128
+      ],
+      "id": "d0940a44-1745-4fbe-8bc3-e5b0485e9202",
+      "name": "Webhook",
+      "webhookId": "d746c512-8df6-4a77-b080-4cb4be7931c5"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({ \n     reply: $json.reply || 'Selesai.', \n     html: $json.html || '' \n}) }}\n",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1520,
+        -160
+      ],
+      "id": "45380888-27a6-4525-9dcc-82c99dc5fe63",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "HTTP Market",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Market": {
+      "main": [
+        [
+          {
+            "node": "PickTop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PickTop": {
+      "main": [
+        [
+          {
+            "node": "BuildHTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildHTML": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BuildIDs (gabungkan ids final)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Search": {
+      "main": [
+        [
+          {
+            "node": "BuildIDs (gabungkan ids final)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Markets (by ids)": {
+      "main": [
+        [
+          {
+            "node": "Price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildIDs (gabungkan ids final)": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Markets (by ids)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Params": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF q exists (AI)": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Params": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "AI Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "IF q exists (AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "9d3abbb4-890c-447d-ab43-cf894b984548",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "62f181da8abbfb827291f4631c4e0c4174b7b1224a40a58c6bedaa8397ec9c72"
+  },
+  "id": "AYnacbTsD242MWmP",
+  "tags": []
+}

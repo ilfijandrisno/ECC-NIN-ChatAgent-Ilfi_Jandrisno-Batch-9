@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kunno — AI Agent</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#12182b; --muted:#6c7aa5; --text:#e9eeff; --accent:#7aa2ff; }
+    *{box-sizing:border-box} body{margin:0;background:linear-gradient(120deg,#0b1020,#0f1630);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
+    .app{width:min(900px,96vw);height:min(80vh,800px);background:rgba(18,24,43,.8);backdrop-filter: blur(10px);border:1px solid rgba(255,255,255,.06);border-radius:20px;display:flex;flex-direction:column;box-shadow: 0 10px 40px rgba(0,0,0,.35)}
+    .header{padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;align-items:center;gap:12px}
+    .dot{width:10px;height:10px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#9bf,#58f)}
+    .title{font-weight:700;letter-spacing:.2px} .sub{color:var(--muted);font-size:12px}
+    .messages{flex:1;overflow:auto;padding:18px;display:flex;flex-direction:column;gap:10px}
+    .bubble{max-width:80%;padding:12px 14px;border-radius:14px;line-height:1.45;white-space:pre-wrap;word-wrap:break-word}
+    .me{align-self:flex-end;background:linear-gradient(180deg,#243056,#1a2342);border:1px solid rgba(122,162,255,.25)}
+    .ai{align-self:flex-start;background:linear-gradient(180deg,#151c34,#12182b);border:1px solid rgba(255,255,255,.06)}
+    .footer{padding:12px;border-top:1px solid rgba(255,255,255,.06);display:flex;gap:10px}
+    .input{flex:1;background:#0f1530;border:1px solid rgba(255,255,255,.08);color:var(--text);padding:12px 14px;border-radius:12px;outline:none}
+    .btn{background:linear-gradient(180deg,#3b6cff,#295aff);color:white;border:0;padding:0 16px;border-radius:12px;cursor:pointer;min-width:92px;font-weight:600}
+    .btn[disabled]{opacity:.6;cursor:not-allowed}
+    .hint{padding:0 18px 12px;color:var(--muted);font-size:12px}
+    .typing{display:inline-block;width:36px}
+    .typing span{display:inline-block;width:6px;height:6px;margin-right:4px;background:#9ab7ff;border-radius:50%;animation:blink 1s infinite ease-in-out}
+    .typing span:nth-child(2){animation-delay:.2s} .typing span:nth-child(3){animation-delay:.4s}
+    @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="dot"></div>
+      <div>
+        <div class="title">Kunno — AI Agent</div>
+        <div class="sub">Ngetik aja. Enter kirim • Shift+Enter baris baru</div>
+      </div>
+    </div>
+
+    <div id="messages" class="messages" aria-live="polite"></div>
+
+    <div class="footer">
+      <textarea id="input" class="input" rows="2" placeholder="Tulis pesan…"></textarea>
+      <button id="send" class="btn">Kirim</button>
+    </div>
+    <div class="hint">Tips: kamu bisa set <code>AUTH_TOKEN</code> &amp; <code>WEBHOOK_URL</code> di bagian atas skrip.</div>
+  </div>
+
+  <script>
+    // === KONFIGURASI ===
+    //const WEBHOOK_URL = "https://proven-desired-lemur.ngrok-free.app/webhook-test/3c6b4494-30d6-4525-a66f-881be2d391d2"; // GANTI dengan URL Webhook POST kamu
+    const WEBHOOK_URL = "https://proven-desired-lemur.ngrok-free.app/webhook-test/d746c512-8df6-4a77-b080-4cb4be7931c5";
+    
+    const AUTH_TOKEN  = ""; // (opsional) jika kamu aktifkan cek X-Kunno-Key di n8n, isi secret yang sama di sini
+    const TIMEZONE    = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Jakarta";
+
+    // Persisten sesi sederhana
+    const sessionKey = "kunno_session_id";
+    let sessionId = localStorage.getItem(sessionKey);
+    if (!sessionId) {
+      sessionId = crypto.randomUUID();
+      localStorage.setItem(sessionKey, sessionId);
+    }
+
+    // === DOM ===
+    const $messages = document.getElementById("messages");
+    const $input = document.getElementById("input");
+    const $send = document.getElementById("send");
+
+    function escapeHtml(s){
+      return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+
+    function addBubble(text, who="ai"){
+      const div = document.createElement("div");
+      div.className = `bubble ${who === "me" ? "me" : "ai"}`;
+      div.innerHTML = escapeHtml(text);
+      $messages.appendChild(div);
+      $messages.scrollTop = $messages.scrollHeight;
+    }
+
+    function addTyping(){
+      const div = document.createElement("div");
+      div.className = "bubble ai";
+      div.dataset.typing = "1";
+      div.innerHTML = `<span class="typing"><span></span><span></span><span></span></span>`;
+      $messages.appendChild(div);
+      $messages.scrollTop = $messages.scrollHeight;
+      return div;
+    }
+
+    async function send(){
+      const text = ($input.value || "").trim();
+      if (!text) return;
+      addBubble(text, "me");
+      $input.value = "";
+      $input.focus();
+
+      $send.disabled = true;
+      const typing = addTyping();
+
+      try{
+        const res = await fetch(WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(AUTH_TOKEN ? {"X-Kunno-Key": AUTH_TOKEN} : {})
+          },
+          body: JSON.stringify({
+            message: text,
+            sessionId,
+            timezone: TIMEZONE,
+            t: new Date().toISOString()
+          })
+        });
+
+        typing.remove();
+
+        if (!res.ok){
+          addBubble(`(Error ${res.status}) Gagal memanggil webhook.`, "ai");
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        const reply = (data && (data.reply || data.choices?.[0]?.message?.content || data.candidates?.[0]?.content?.parts?.[0]?.text)) || "Maaf, aku tidak menemukan jawaban.";
+        addBubble(reply, "ai");
+      } catch(err){
+        typing.remove();
+        addBubble(`(Network error) ${err?.message || err}`, "ai");
+      } finally{
+        $send.disabled = false;
+      }
+    }
+
+    // Event handlers
+    $send.addEventListener("click", send);
+    $input.addEventListener("keydown", (e)=>{
+      if (e.key === "Enter" && !e.shiftKey){
+        e.preventDefault();
+        send();
+      }
+    });
+
+    // Sambutan awal
+    addBubble("Halo! Aku Kunno. Ada yang bisa kubantu hari ini? 😊", "ai");
+  </script>
+</body>
+</html>
